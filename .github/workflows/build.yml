@@ -36,7 +36,7 @@ jobs:
         run: |
           docker build --build-arg TMDB_V3_API_KEY=${{ secrets.TMDB_V3_API_KEY }} -t elviedjomo/netflix:${{ env.TAG }} .
           docker tag elviedjomo/netflix:${{ env.TAG }} elviedjomo/netflix:latest
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
           docker push elviedjomo/netflix:${{ env.TAG }}
           docker push elviedjomo/netflix:latest
         env:
@@ -47,7 +47,7 @@ jobs:
     runs-on: [aws-netflix]
     steps:
       - name: Docker login (if needed)
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
       - name: Pull the docker image
         run: docker pull elviedjomo/netflix:latest
