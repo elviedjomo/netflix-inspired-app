@@ -1,4 +1,4 @@
-name: Build & Deploy
+name: Build and Deploy
 
 on:
   push:
@@ -7,24 +7,30 @@ on:
 
 jobs:
   build:
-    name: Build
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set_tag.outputs.image_tag }}
+
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v2
         with:
           fetch-depth: 0
 
-      - name: Set Docker tag from Git SHA
-        id: vars
-        run: echo "TAG=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+      - name: Set image tag
+        id: set_tag
+        run: echo "image_tag=$(echo $GITHUB_SHA | cut -c1-7)" >> $GITHUB_OUTPUT
 
-      - uses: sonarsource/sonarqube-scan-action@master
+      - name: SonarQube Scan
+        uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      - name: Install Trivy
+      - name: Install Trivy and scan
         run: |
+          sudo apt-get update
           sudo apt-get install wget apt-transport-https gnupg lsb-release -y
           wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
@@ -32,39 +38,40 @@ jobs:
           sudo apt-get install trivy -y
           trivy fs .
 
-      - name: Docker build and push
+      - name: Build and push Docker image
         run: |
-          docker build --build-arg TMDB_V3_API_KEY=${{ secrets.TMDB_V3_API_KEY }} -t elviedjomo/netflix:${{ env.TAG }} .
-          docker tag elviedjomo/netflix:${{ env.TAG }} elviedjomo/netflix:latest
+          IMAGE_TAG=${{ steps.set_tag.outputs.image_tag }}
+          docker build --build-arg TMDB_V3_API_KEY=${{ secrets.TMDB_V3_API_KEY }} -t elviedjomo/netflix:$IMAGE_TAG .
+          docker tag elviedjomo/netflix:$IMAGE_TAG elviedjomo/netflix:latest
           echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-          docker push elviedjomo/netflix:${{ env.TAG }}
+          docker push elviedjomo/netflix:$IMAGE_TAG
           docker push elviedjomo/netflix:latest
-        env:
-          DOCKER_CLI_ACI: 1
 
   deploy:
+    name: Deploy to EC2 Runner
     needs: build
     runs-on: [aws-netflix]
+    timeout-minutes: 15
+
     steps:
-      - name: Docker login (if needed)
+      - name: Set image tag
+        run: echo "IMAGE_TAG=${{ needs.build.outputs.image_tag }}" >> $GITHUB_ENV
+
+      - name: Docker login
         run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-      - name: Pull the docker image
-        run: docker pull elviedjomo/netflix:latest
-
-      - name: Trivy image scan
+      - name: Pull Docker image
         run: |
-          trivy --version
-          trivy image --timeout 5m elviedjomo/netflix:latest
+          echo "Pulling elviedjomo/netflix:${IMAGE_TAG}"
+          timeout 120 docker pull elviedjomo/netflix:${IMAGE_TAG}
 
-      - name: Remove existing container (if any)
+      - name: Trivy scan on image
+        run: |
+          echo "Running Trivy scan on image..."
+          timeout 300 trivy image elviedjomo/netflix:${IMAGE_TAG}
+
+      - name: Remove old container (if any)
         run: docker rm -f netflix || true
 
-      - name: Run the container
-        run: docker run -d --name netflix -p 8081:80 elviedjomo/netflix:latest
-
-      - name: Notify Discord
-        run: |
-          curl -X POST -H 'Content-Type: application/json' \
-          -d '{"content":"✅ Deployed `netflix` to `http://netflix.yourdomain.com` on port 8081!"}' \
-          ${{ secrets.DISCORD_WEBHOOK_URL }}
+      - name: Run new container
+        run: docker run -d --name netflix -p 8081:80 elviedjomo/netflix:${IMAGE_TAG}
